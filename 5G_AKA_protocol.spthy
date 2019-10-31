@@ -3,7 +3,7 @@ begin
 
 builtins: asymmetric-encryption, multiset, xor
 
-functions: f1/2, f1_s/2, f2/2, f3/2, f4/2, f5/2, f5_s/2, KDF/2, SHA256/2
+functions: f1/2, f1_s/2, f2/2, f3/2, f4/2, f5/2, f5_s/2, SHA256/2, Challenge/3, KeySeed/4
 
 
 //--------------------------------------------------------------------------------//
@@ -58,11 +58,11 @@ rule initialize_SN:
 
 rule initialize_UE:
   [ Fr(~ue_supi),
-    !Ltk(ue_ue_ltk,$UE,$HN),
+    !Ltk(ue_ltk,$UE,$HN),
     !SQN(ue_sqn, $UE,$HN),
     In(<'HN_PK', hn_supi, hn_pub_sk>) ]
   --[ Create($UE, ~ue_supi, 'UE') ]->
-  [ St_UE_0($UE, ~ue_supi, ue_ue_ltk, ue_sqn, hn_supi, hn_pub_sk) ]
+  [ St_UE_0($UE, ~ue_supi, ue_ltk, ue_sqn, hn_supi, hn_pub_sk) ]
 
 
 //--------------------------------------------------------------------------------//
@@ -84,12 +84,12 @@ rule 1_SN_send_to_UE:
   ]
 
 rule 1_UE_receive_from_SN:
-  [ St_UE_0($UE, ue_supi, ue_ue_ltk, ue_sqn, hn_supi, hn_pub_sk)
+  [ St_UE_0($UE, ue_supi, ue_ltk, ue_sqn, hn_supi, hn_pub_sk)
   , In(m)
   ]
   --[ Receive($UE, m),
       Station('UE') ]->
-  [ St_UE_1($UE, ue_supi, ue_ue_ltk, ue_sqn, hn_supi, hn_pub_sk) ]
+  [ St_UE_1($UE, ue_supi, ue_ltk, ue_sqn, hn_supi, hn_pub_sk) ]
 
 
 //--------------------------------------------------------------------------------//
@@ -106,10 +106,10 @@ rule 2_UE_send_to_SN:
     suci = <<ue_supi_enc1, ue_supi_enc2>, hn_supi>
   in
   [ Fr(~ue_R), 
-    St_UE_1($UE, ue_supi, ue_ue_ltk, ue_sqn, hn_supi, hn_pub_sk) ]
+    St_UE_1($UE, ue_supi, ue_ltk, ue_sqn, hn_supi, hn_pub_sk) ]
   --[ Send($UE, suci),
       Station('UE')]->
-  [ St_UE_2($UE, ue_supi, ue_ue_ltk, ue_sqn, hn_supi, hn_pub_sk)
+  [ St_UE_2($UE, ue_supi, ue_ltk, ue_sqn, hn_supi, hn_pub_sk)
   , Out(suci)
   ]
 
@@ -171,15 +171,10 @@ let
   CONC = hn_sqn XOR AK
   AUTN = <CONC, MAC>
 
-  RES = f2(hn_ltk, ~R)
-  CK = f3(hn_ltk, ~R)
-  IK = f4(hn_ltk, ~R)
-  RES_s = KDF(<CK, IK>, <sn_id, ~R, RES>)
-  xRES_s = RES_s
-  HRES_s = SHA256(~R, RES_s)
+  xRES_s = Challenge(hn_ltk, ~R, sn_id)
+  HRES_s = SHA256(~R, xRES_s)
 
-  K_AUSF = KDF(<CK, IK>, <sn_id, CONC>)
-  K_SEAF = KDF(K_AUSF, sn_id)
+  K_SEAF = KeySeed(hn_ltk, ~R, hn_sqn, sn_id)
   hn_sqn = hn_sqn + '1'
 
   msg_out = <~R, AUTN, HRES_s, K_SEAF>
@@ -226,17 +221,17 @@ in
 
 rule 5_UE_receive_from_SN:
 let
-  AK  = f5(ue_ue_ltk, R)
+  AK  = f5(ue_ltk, R)
   xhn_sqn = xCONC XOR AK
-  MAC = f1(ue_ue_ltk, <xhn_sqn, R>)
+  MAC = f1(ue_ltk, <xhn_sqn, R>)
   AUTN = <xCONC, xMAC>
   msg_in = <R, AUTN, sn_id>
 in
   [ In(msg_in),
-    St_UE_2($UE, ue_supi, ue_ue_ltk, ue_sqn, hn_supi, hn_pub_sk) ]
+    St_UE_2($UE, ue_supi, ue_ltk, ue_sqn, hn_supi, hn_pub_sk) ]
   --[ Receive($UE, MAC),
       Station('UE') ]->
-  [ St_UE_3($UE, ue_supi, ue_ue_ltk, ue_sqn, hn_supi, hn_pub_sk, sn_id ,xhn_sqn, R, xCONC, MAC, xMAC) ]
+  [ St_UE_3($UE, ue_supi, ue_ltk, ue_sqn, hn_supi, hn_pub_sk, sn_id ,xhn_sqn, R, xCONC, MAC, xMAC) ]
 
 
 //--------------------------------------------------------------------------------//
@@ -250,16 +245,12 @@ in
 
 rule 6_1_UE_send_to_SN:
 let
-  RES = f2(ue_ue_ltk, R)
-  CK = f3(ue_ue_ltk, R)
-  IK = f4(ue_ue_ltk, R)
-  RES_s = KDF(<CK, IK>, <sn_id, R, RES>)
+  RES = f2(ue_ltk, R)
+  RES_s = Challenge(ue_ltk, R, sn_id)
   msg_out = <'ExpectedResponse', RES_s>
-
-  K_AUSF = KDF(<CK, IK>, <sn_id, xCONC>)
-  K_SEAF = KDF(K_AUSF, sn_id)
+  K_SEAF = KeySeed(ue_ltk, R, hn_sqn, sn_id)
 in
-  [ St_UE_3($UE, ue_supi, ue_ue_ltk, ue_sqn, hn_supi, hn_pub_sk, sn_id ,xhn_sqn, R, xCONC, MAC, xMAC) ]
+  [ St_UE_3($UE, ue_supi, ue_ltk, ue_sqn, hn_supi, hn_pub_sk, sn_id ,xhn_sqn, R, xCONC, MAC, xMAC) ]
   --[ Send($UE, msg_out),
       Station('UE'),
       Secret(MAC),
@@ -271,15 +262,15 @@ in
       Eq(xMAC, MAC),
       GreaterThan(xhn_sqn, ue_sqn) ]->
   [ Out(msg_out),
-    St_UE_4_1_additional_st($UE, ue_supi, ue_ue_ltk, ue_sqn, hn_supi, hn_pub_sk, sn_id ,xhn_sqn, R, xCONC, MAC, xMAC) ]
+    St_UE_4_1_additional_st($UE, ue_supi, ue_ltk, ue_sqn, hn_supi, hn_pub_sk, sn_id ,xhn_sqn, R, xCONC, MAC, xMAC) ]
 
 rule 6_1_UE_additional_st:
 let
   ue_sqn = xhn_sqn
 in
-  [ St_UE_4_1_additional_st($UE, ue_supi, ue_ue_ltk, ue_sqn, hn_supi, hn_pub_sk, sn_id ,xhn_sqn, R, xCONC, MAC, xMAC) ]
+  [ St_UE_4_1_additional_st($UE, ue_supi, ue_ltk, ue_sqn, hn_supi, hn_pub_sk, sn_id ,xhn_sqn, R, xCONC, MAC, xMAC) ]
   -->
-  [ St_UE_4_1($UE, ue_supi, ue_ue_ltk, ue_sqn, hn_supi, hn_pub_sk, sn_id ,xhn_sqn, R, xCONC, MAC, xMAC) ]
+  [ St_UE_4_1($UE, ue_supi, ue_ltk, ue_sqn, hn_supi, hn_pub_sk, sn_id ,xhn_sqn, R, xCONC, MAC, xMAC) ]
 
 
 rule 6_1_SN_receive_from_UE:
@@ -306,18 +297,18 @@ in
 rule 6_2_UE_send_to_SN:
 let
   AUTS = <(ue_sqn XOR AKS), MACS>
-  AKS = f5_s(ue_ue_ltk, R)
-  MACS = f1_s(ue_ue_ltk, <ue_sqn, R>)
+  AKS = f5_s(ue_ltk, R)
+  MACS = f1_s(ue_ltk, <ue_sqn, R>)
   msg_out = <'SynchronizationFailure', MACS>
 in
-  [ St_UE_3($UE, ue_supi, ue_ue_ltk, ue_sqn, hn_supi, hn_pub_sk, sn_id ,xhn_sqn, R, xCONC, MAC, xMAC) ]
+  [ St_UE_3($UE, ue_supi, ue_ltk, ue_sqn, hn_supi, hn_pub_sk, sn_id ,xhn_sqn, R, xCONC, MAC, xMAC) ]
   --[ Send($UE, msg_out),
       Station('UE'),
       Eq(xMAC, MAC),
       SmallerOrEqualThan(xhn_sqn, ue_sqn)
        ]->
   [ Out(msg_out),
-    St_UE_4_2($UE, ue_supi, ue_ue_ltk, ue_sqn, hn_supi, hn_pub_sk, sn_id ,xhn_sqn, R, xCONC, MAC, xMAC) ]
+    St_UE_4_2($UE, ue_supi, ue_ltk, ue_sqn, hn_supi, hn_pub_sk, sn_id ,xhn_sqn, R, xCONC, MAC, xMAC) ]
 
 rule 6_2_SN_receive_from_UE:
 let
@@ -344,12 +335,12 @@ rule 6_3_UE_send_to_SN:
 let
   msg_out = 'MacFailure'
 in
-  [ St_UE_3($UE, ue_supi, ue_ue_ltk, ue_sqn, hn_supi, hn_pub_sk, sn_id ,xhn_sqn, R, xCONC, MAC, xMAC) ]
+  [ St_UE_3($UE, ue_supi, ue_ltk, ue_sqn, hn_supi, hn_pub_sk, sn_id ,xhn_sqn, R, xCONC, MAC, xMAC) ]
   --[ Send($UE, msg_out),
       Station('UE'),
       Neq(xMAC, MAC) ]->
   [ Out(msg_out),
-    St_UE_4_3($UE, ue_supi, ue_ue_ltk, ue_sqn, hn_supi, hn_pub_sk, sn_id ,xhn_sqn, R, xCONC, MAC, xMAC) ]
+    St_UE_4_3($UE, ue_supi, ue_ltk, ue_sqn, hn_supi, hn_pub_sk, sn_id ,xhn_sqn, R, xCONC, MAC, xMAC) ]
 
 rule 6_3_SN_receive_from_UE:
   [ In(msg_in), 
