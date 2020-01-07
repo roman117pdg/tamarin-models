@@ -1,0 +1,807 @@
+/*
+ *  Author: Mikołaj Rogacki
+ *  Model Name: 5G_AKA_protocol.spthy
+ *  Status: DEVELOPMENTAL
+ *
+ *  Comments:  
+ */
+
+theory EAP_AKA_protocol
+begin
+
+builtins: asymmetric-encryption, symmetric-encryption, multiset, xor 
+
+functions: f1/2, f1_s/2, f2/2, f3/2, f4/2, f5/2, f5_s/2, SHA256/2, KDF/2, PRF/2, HMAC/2
+
+
+//--------------------------------------------------------------------------------//
+//                              Initialization rules                              //
+//--------------------------------------------------------------------------------//
+
+
+rule initializeLtk:
+  [ Fr(~ltk) ]
+  -->
+  [ !Ltk(~ltk,$UE,$HN) ]
+
+rule initalizeChannelLtk: 
+  [ Fr(~cLtk) ]
+  -->
+  [ !ChannelLtk(~cLtk,$SN,$HN) ]
+
+rule initalizePrivateHNkey:
+  [ Fr(~privk) ]
+  -->
+  [ !PrivateK(~privk, $HN)
+  , !PublicK(pk(~privk), $SN)]
+
+rule initializeSQN:
+  [ Fr(~sqn) ]
+  -->
+  [ !SQN(~sqn,$UE,$HN) ]
+
+
+//--------------------------------------------------------------------------------//
+//                                  Reveal rules                                  //
+//--------------------------------------------------------------------------------//
+
+
+rule revealLtk: 
+  [ !Ltk(ltk,$UE,$HN) ]
+  --[ RevealLtk(<$UE, $HN>) ]->
+  [ Out(ltk)]
+
+rule revealChannelLtk:
+  [ !ChannelLtk(cLtk,$SN,$HN) ]
+  --[ RevealCLtk(<$SN, $HN>) ]->
+  [ Out(cLtk)]
+
+rule revealPrivK: 
+  [ !PrivateK(privk, $HN) ]
+  --[ RevealPrivK($HN) ]->
+  [ Out(privk) ]
+
+
+rule revealSQN:
+  [ !SQN(sqn,$UE,$HN) ]
+  --[ RevealSQN(<$UE, $HN>) ]->
+  [Out(sqn)]
+
+
+//--------------------------------------------------------------------------------//
+//                             Stations initialization                            //
+//                                UE     SN     HN                                //
+//--------------------------------------------------------------------------------//
+
+
+rule initialize_HN:
+  [ Fr(~ue_supi)
+  , Fr(~hn_id)
+  , !PrivateK(hn_sk,$HN)
+  , !Ltk(hn_ltk,$UE,$HN)
+  , !SQN(hn_sqn,$UE,$HN)
+  , !ChannelLtk(cLtk,$SN,$HN) 
+  ]
+  --[ Create($HN, ~hn_id, 'HN') ]->
+  [ State_HN_0($HN, ~hn_id, ~ue_supi, hn_ltk, cLtk, hn_sqn, hn_sk)
+  , USIM(~ue_supi, ~hn_id)
+  ]
+
+rule initialize_SN:
+  [ Fr(~sn_id) 
+  , !ChannelLtk(~cLtk,$SN,$HN)
+  ]
+  --[ Create($SN, ~sn_id, 'SN') ]->
+  [ State_SN_0($SN, ~sn_id, ~cLtk) ]
+
+rule initialize_UE:
+  [ !Ltk(ue_ltk, $UE, $HN)
+  , !SQN(ue_sqn, $UE, $HN)
+  , !PublicK(hn_pub_sk, $SN)
+  , USIM(ue_supi, hn_id)
+  ]
+  --[ Create($UE, ue_supi, 'UE') ]->
+  [ State_UE_0($UE, ue_supi, ue_ltk, ue_sqn, hn_id, hn_pub_sk) ]
+
+
+//--------------------------------------------------------------------------------//
+//                                    MESSAGE 1                                   //
+//                                 <SN_ID(SN_NAME)>                               //
+//                                UE <-- SN     HN                                //
+//--------------------------------------------------------------------------------//
+
+rule 1_SN_send_to_UE:
+  let
+    msg_out = <'msg1',sn_id>
+  in
+  [ State_SN_0($SN, sn_id, cLtk) ]
+  --[ Send($SN, msg_out)
+    , Station('SN')
+    , StartExchange(msg_out) 
+    ]->
+  [ //MSG1($SN, $UE, msg_out)
+    Out(msg_out)
+  , State_SN_1($SN, sn_id, cLtk)
+  ]
+
+rule 1_UE_receive_from_SN:
+  let
+    msg_in = <'msg1',sn_id>
+  in
+  [ State_UE_0($UE, ue_supi, ue_ltk, ue_sqn, hn_id, hn_pub_sk)
+  //, MSG1($SN, $UE, msg_in)
+  , In(msg_in)
+  ]
+  --[ Receive($UE, msg_in)
+    , Station('UE') 
+    ]->
+  [ State_UE_1($UE, ue_supi, ue_ltk, ue_sqn, hn_id, hn_pub_sk, sn_id) ]
+
+
+//--------------------------------------------------------------------------------//
+//                                    MESSAGE 2                                   //
+//                                     <SUCI>                                     //
+//                                UE --> SN     HN                                //
+//--------------------------------------------------------------------------------//
+
+
+rule 2_UE_send_to_SN:
+  let
+    ue_supi_enc1 = aenc(ue_supi, hn_pub_sk)  // funkction aenc can't encrypt two variables
+    ue_supi_enc2 = aenc(~ue_R, hn_pub_sk)
+    suci = <<ue_supi_enc1, ue_supi_enc2>, hn_id>
+    msg_out = <'msg2',suci>
+  in
+  [ Fr(~ue_R) 
+  , State_UE_1($UE, ue_supi, ue_ltk, ue_sqn, hn_id, hn_pub_sk, sn_id) 
+  ]
+  --[ Send($UE, <$UE, ue_supi>)
+    , Station('UE')
+    , Secret_SUPI(ue_supi)
+    , Honest($HN)
+    , Honest($SN)
+    , Honest($UE)
+    ]->
+  [ State_UE_2($UE, ue_supi, ue_ltk, ue_sqn, hn_id, hn_pub_sk, sn_id)
+  //, MSG2($UE, $SN, msg_out)
+  , Out(msg_out)
+  ]
+
+rule 2_SN_receive_from_UE:
+  let
+    msg_in = <'msg2',suci>
+  in
+  [ //MSG2($UE, $SN, msg_in)
+    In(msg_in)
+  , State_SN_1($SN, sn_id, cLtk)
+  ]
+  --[ Station('SN') ]->
+  [ State_SN_2($SN, sn_id, cLtk, suci) ]
+
+
+//--------------------------------------------------------------------------------//
+//                                    MESSAGE 3                                   //
+//                                 <SUCI, SNname>                                 //
+//                                UE     SN --> HN                                //
+//--------------------------------------------------------------------------------//
+
+rule 3_SN_send_to_HN:
+  let
+    suci = <ue_supi_enc, hn_id>
+    suciSN = <suci, sn_id> 
+    msg_out = senc(<'msg3',suciSN>, cLtk) 
+  in
+  [ State_SN_2($SN, sn_id, cLtk, suci)]
+  --[ Send($SN, suciSN)
+    , Station('SN') 
+    , OUT_SN_3($SN, suciSN)
+    ]->
+  [ State_SN_3($SN, sn_id, cLtk, suci, hn_id)
+  , Out(msg_out) 
+  ]
+
+rule 3_HN_receive_from_SN:
+let
+  ue_supi_rec = adec(ue_supi_enc1, hn_sk)
+  ue_R = adec(ue_supi_enc2, hn_sk) 
+  ue_supi_enc = <ue_supi_enc1, ue_supi_enc2>
+  suci = <ue_supi_enc, hn_id>
+  suciSN = <suci, sn_id>
+  msg_in = senc(<'msg3', suciSN>,cLtk)
+in
+  [ State_HN_0($HN, hn_id, ue_supi, hn_ltk, cLtk, hn_sqn, hn_sk)
+  , In(msg_in)
+  ]
+  --[ Receive($HN, suciSN)
+    , Station('HN')
+    , Receive($HN,  <$UE, ue_supi>)
+    , Secret_PRIVK(hn_sk)
+    , In_HN_3($HN, suciSN)
+    , Eq(ue_supi, ue_supi_rec)
+    , EndInitialization(suciSN) 
+    ]->
+  [ State_HN_1($HN, hn_id, ue_supi, hn_ltk, cLtk, hn_sqn, hn_sk, sn_id) ]
+
+
+//--------------------------------------------------------------------------------//
+//                                    MESSAGE 4                                   //
+//                            <R, AUTN, SN_ID, AT_MAC1>                           //
+//                                UE     SN <-- HN                                //
+//--------------------------------------------------------------------------------//
+
+
+rule 4_HN_send_to_SN:
+let
+  MAC = f1(hn_ltk, <hn_sqn,~R>)
+  xRES = f2(hn_ltk,~R)  
+  CK = f3(hn_ltk,~R)
+  IK = f4(hn_ltk,~R)
+  AK = f5(hn_ltk,~R)
+  CK_p = KDF(CK,sn_id)
+  IK_p = KDF(IK,sn_id)
+  MK = KDF(<CK_p,IK_p>, <'EAP_AKA', ue_supi>)
+  K_AUSF = <'EMSK', MK>
+  K_AUT = <'K_AUT', MK>
+  CONC = hn_sqn XOR AK
+  AUTN = <CONC, MAC>
+  AT_MAC1 = HMAC(K_AUT, AUTN)
+
+  CONC = hn_sqn XOR AK
+  AUTN = <CONC, MAC>
+
+  K_SEAF = KDF(K_AUSF, sn_id)
+
+  AV = <'msg4', ~R, AUTN, sn_id, AT_MAC1>
+  msg_out = senc(AV, cLtk)
+  // msg_out = senc(<'msg4', ~R, AUTN, HRES_s, K_SEAF>, cLtk)
+
+in
+  [ Fr(~R)
+  , State_HN_1($HN, hn_id, ue_supi, hn_ltk, cLtk, hn_sqn, hn_sk, sn_id)
+  ]
+  --[ Send($HN, <$HN, K_SEAF>)
+    , Station('HN')
+    , Secret_KSEAF(K_SEAF)
+    , Secret_SQN(hn_sqn)
+    , Secret_LTK(hn_ltk)
+    , Honest($HN)
+    , Honest($SN)
+    , Honest($UE)
+    , OUT_HN_4($HN, AV)
+    , HN_send_4_typ_lem(<'msg4', ~R, AUTN, sn_id, AT_MAC1>)
+    ]->
+  [ //MSG4($HN, $SN, msg_out)
+  Out(msg_out) //Out(senc(msg_out,cLtk))
+  , State_HN_2($HN, hn_id, ue_supi, hn_ltk, cLtk, hn_sqn, hn_sk, sn_id, xRES, K_SEAF)
+  ]
+
+rule 4_SN_receive_from_HN:
+let
+  AV = <'msg4', R, AUTN, sn_id, AT_MAC1>
+  msg_in = senc(AV, cLtk)
+  // msg_in = senc(<'msg4', R, AUTN, HRES_s, K_SEAF>, cLtk)
+in
+  [ //MSG4($HN, $SN, msg_in)
+    In(msg_in)  //In(senc(msg_in,cLtk))
+  , State_SN_3($SN, sn_id, cLtk, suci, hn_id) 
+  ]
+  --[ Receive($SN, <$HN, AV>)
+    , Station('SN')
+    , Authentic($HN, <$HN, AV>)
+    , IN_SN_4($HN, AV)
+    ]-> 
+  [  State_SN_4($SN, sn_id, cLtk, suci, hn_id, R, AUTN, sn_id, AT_MAC1) ]
+
+
+//--------------------------------------------------------------------------------//
+//                                    MESSAGE 5                                   //
+//                            <R, AUTN, SN_ID, AT_MAC1>                           //
+//                                UE <-- SN     HN                                //
+//--------------------------------------------------------------------------------//
+
+
+rule 5_SN_send_to_UE:
+let
+  msg_out = <'msg5', R, AUTN, sn_id, AT_MAC1>
+in
+  [ State_SN_4($SN, sn_id, cLtk, suci, hn_id, R, AUTN, sn_id, AT_MAC1) ]
+  --[ Send($SN, msg_out)
+    , Station('SN')
+    , SN_send_5_typ_lem(<'msg5', R, AUTN>)
+    ]-> 
+  [ //MSG5($SN, $UE, msg_out)
+    Out(msg_out)
+  , State_SN_5($SN, sn_id, cLtk, suci, hn_id, R, AUTN, sn_id, AT_MAC1) 
+  ]
+
+rule 5_UE_receive_from_SN:
+let
+
+  AK = f5(ue_ltk, R)
+  CK = f3(ue_ltk, R)
+  IK = f4(ue_ltk, R)
+  CK_p = KDF(CK,sn_id)
+  IK_p = KDF(IK,sn_id)
+  MK = KDF(<CK_p,IK_p>, <'EAP_AKA', ue_supi>)
+  K_AUSF = <'EMSK', MK>
+  K_AUT = <'K_AUT', MK>
+  
+  AUTN = <xCONC, xMAC>
+  xhn_sqn = xCONC XOR AK
+  MAC = f1(ue_ltk, <xhn_sqn, R>)
+  xAT_MAC1 = HMAC(K_AUT, AUTN)
+  msg_in = <'msg5', R, AUTN, sn_id, AT_MAC1>
+in
+  [ //MSG5($SN, $UE, msg_in)
+    In(msg_in)
+  , State_UE_2($UE, ue_supi, ue_ltk, ue_sqn, hn_id, hn_pub_sk, sn_id) 
+ // , State_SN_5($SN, sn_id, cLtk, suci, hn_id, R, AUTN, HRES_s, K_SEAF)  //hellper to diagram
+  ]
+  --[ Receive($UE, MAC)
+    , Station('UE')
+    ]->
+  [ State_UE_3($UE, ue_supi, ue_ltk, ue_sqn, hn_id, hn_pub_sk, sn_id, xhn_sqn, R, MAC, xMAC, AT_MAC1, xAT_MAC1, K_AUSF, K_AUT) ]
+
+
+//--------------------------------------------------------------------------------//
+//                                   MESSAGE 6.1                                  //
+//                                EXPECTED RESPONSE                               //
+//                      CHECK: xMAC == MAC && xSQN_HN > SQN_UE                    //
+//                           <'ExpectedResponse', RES*>                           //
+//                                UE --> SN     HN                                //
+//--------------------------------------------------------------------------------//
+
+
+rule 6_1_UE_send_to_SN:
+let
+  RES = f2(ue_ltk, R)
+  K_SEAF = KDF(K_AUSF, sn_id)
+  AT_MAC2 = HMAC(K_AUT, RES)
+  msg_out = <'msg61', <RES, AT_MAC2>>
+in
+  [ State_UE_3($UE, ue_supi, ue_ltk, ue_sqn, hn_id, hn_pub_sk, sn_id, xhn_sqn, R, MAC, xMAC, AT_MAC1, xAT_MAC1, K_AUSF, K_AUT) ]
+  --[ Send($UE, msg_out)
+    , Station('UE')
+    , Secret_KSEAF(K_SEAF)
+    , Secret_SQN(ue_sqn)
+    , Secret_LTK(ue_ltk)
+    , Honest($UE)
+    , Honest($SN)
+    , Honest($HN)
+    , Authentic($UE, MAC)
+    //, Eq(xMAC, MAC)
+    , GreaterOrEqualThan(xhn_sqn, ue_sqn) 
+    ]->
+  [ //MSG61($UE, $SN, msg_out)
+    Out(msg_out)
+  , State_UE_4_1($UE, ue_supi, ue_ltk, ue_sqn, hn_id, hn_pub_sk, sn_id, xhn_sqn, R, MAC, xMAC, AT_MAC1, xAT_MAC1, K_AUSF, K_AUT) ]
+//   , State_UE_4_1_additional_st($UE, ue_supi, ue_ltk, ue_sqn, hn_id, hn_pub_sk, sn_id, xhn_sqn, R, xCONC, MAC, xMAC) 
+//   ]
+
+// rule 6_1_UE_additional_st:
+// let
+//   ue_sqn = xhn_sqn
+// in
+//   [ State_UE_4_1_additional_st($UE, ue_supi, ue_ltk, ue_sqn, hn_id, hn_pub_sk, sn_id, xhn_sqn, R, xCONC, MAC, xMAC) ]
+//   -->
+//   [ State_UE_4_1($UE, ue_supi, ue_ltk, ue_sqn, hn_id, hn_pub_sk, sn_id, xhn_sqn, R, xCONC, MAC, xMAC) ]
+
+
+rule 6_1_SN_receive_from_UE:
+let
+  msg_in = <'msg61', <RES, AT_MAC2>>
+in
+  [ //MSG61($UE, $SN, msg_in)
+    In(msg_in)
+  //, State_UE_4_1($UE, ue_supi, ue_ltk, ue_sqn, hn_id, hn_pub_sk, sn_id, xhn_sqn, R, xCONC, MAC, xMAC) //helper to diagram
+  , State_SN_5($SN, sn_id, cLtk, suci, hn_id, R, AUTN, sn_id, AT_MAC1) 
+  ]
+  --[ Receive($SN, msg_in)
+    , Station('SN')
+    // , Eq(msg_type, 'msg61')
+    ]->
+  [ State_SN_6_1($SN, sn_id, cLtk, suci, hn_id, R, AUTN, sn_id, AT_MAC1, RES, AT_MAC2) ]
+
+
+//--------------------------------------------------------------------------------//
+//                                   MESSAGE 6.2                                  //
+//                             SYNCHRONIZATION FAILURE                            //
+//                     CHECK: xMAC == MAC && xSQN_HN <= SQN_UE                    //
+//                        <'SynchronizationFailure', AUTS>                        //
+//                                UE --> SN     HN                                //
+//--------------------------------------------------------------------------------//
+
+
+rule 6_2_UE_send_to_SN:
+let
+  AKS = f5_s(ue_ltk, R)
+  MACS = f1_s(ue_ltk, <ue_sqn, R>)
+  AUTS = <(ue_sqn XOR AKS), MACS>
+  msg_out = <'msg62', AUTS>
+
+in
+  [ State_UE_3($UE, ue_supi, ue_ltk, ue_sqn, hn_id, hn_pub_sk, sn_id, xhn_sqn, R, MAC, xMAC, AT_MAC1, xAT_MAC1, K_AUSF, K_AUT) ]
+  --[ Send($UE, msg_out)
+    , Station('UE')
+    //, Eq(xMAC, MAC)
+    , SmallerThan(xhn_sqn, ue_sqn)
+    ]->
+  [ //MSG62($UE, $SN, msg_out)
+   Out(msg_out)
+  , State_UE_4_2($UE, ue_supi, ue_ltk, ue_sqn, hn_id, hn_pub_sk, sn_id, xhn_sqn, R, MAC, xMAC, AT_MAC1, xAT_MAC1, K_AUSF, K_AUT)
+  ]
+
+rule 6_2_SN_receive_from_UE:
+let
+  msg_in = <'msg62', AUTS> 
+in
+  [ //MSG62($UE, $SN, msg_in)
+   In(msg_in) 
+  , State_SN_5($SN, sn_id, cLtk, suci, hn_id, R, AUTN, sn_id, AT_MAC1) 
+  ]
+  --[ Receive($SN, msg_in)
+    , Station('SN')
+    //, Eq(msg_type, 'msg62') 
+    ]->
+  [ State_SN_6_2($SN, sn_id, cLtk, suci, hn_id, R, AUTN, sn_id, AT_MAC1, AUTS)  ]
+
+
+//--------------------------------------------------------------------------------//
+//                                   MESSAGE 6.3                                  //
+//                                   MAC FAILURE                                  //
+//                               CHECK: xMAC != MAC                               //
+//                                 <'MAC_FAILURE'>                                //
+//                                UE --> SN     HN                                //
+//--------------------------------------------------------------------------------//
+
+
+rule 6_3_UE_send_to_SN:
+let
+  msg_out = <'msg63','MacFailure'>
+in
+  [ State_UE_3($UE, ue_supi, ue_ltk, ue_sqn, hn_id, hn_pub_sk, sn_id, xhn_sqn, R, MAC, xMAC, AT_MAC1, xAT_MAC1, K_AUSF, K_AUT) ]
+  --[ Send($UE, msg_out)
+    , Station('UE')
+    , Neq(xMAC, MAC) 
+    ]->
+  [ //MSG63($UE, $SN, msg_out)
+    Out(msg_out)
+  , State_UE_4_3($UE, ue_supi, ue_ltk, ue_sqn, hn_id, hn_pub_sk, sn_id, xhn_sqn, R, MAC, xMAC, AT_MAC1, xAT_MAC1, K_AUSF, K_AUT)
+  ]
+
+rule 6_3_SN_receive_from_UE:
+let
+  msg_in = <'msg63','MacFailure'>
+in
+  [ //MSG63($UE, $SN, msg_in)
+    In(msg_in) 
+  , State_SN_5($SN, sn_id, cLtk, suci, hn_id, R, AUTN, sn_id, AT_MAC1) 
+  ]
+  --[ Receive($SN, msg_in)
+    , Station('SN')
+    //, Eq(msg_type, 'msg63')
+    , EndMacFailure(msg_in) 
+    ]->
+  [ State_SN_6_3($SN, sn_id, cLtk, suci, hn_id, R, AUTN, sn_id, AT_MAC1)  ]
+
+
+//--------------------------------------------------------------------------------//
+//                                   MESSAGE 7.1                                  //
+//                                EXPECTED RESPONSE                               //
+//                                  <RES*, SUCI>                                  //
+//                                UE     SN --> HN                                //
+//--------------------------------------------------------------------------------//
+
+
+rule 7_1_SN_send_to_HN:
+let
+  msg_out = senc(<'msg71', <RES, AT_MAC2>>, cLtk)
+in
+  [ State_SN_6_1($SN, sn_id, cLtk, suci, hn_id, R, AUTN, sn_id, AT_MAC1, RES, AT_MAC2) ]
+  --[ Send($SN, msg_out)
+    , Station('SN')
+    // , SN_send_71_typ_lem(<'msg71', <RES_s, suci>>)
+    , OUT_SN_71($SN, <'msg71', <RES, AT_MAC2>>)
+    //, Eq(HRES_s, xHRES_s) 
+    ]->
+  [ //MSG71($SN, $HN, msg_out)
+    Out(msg_out) // Out(senc(msg_out, cLtk))
+  , State_SN_7_1($SN, sn_id, cLtk, suci, hn_id, R, AUTN, sn_id, AT_MAC1, RES, AT_MAC2)
+  ]
+
+rule 7_1_HN_receive_from_SN:
+let
+  msg_in = senc(<'msg71', <RES, AT_MAC2>>, cLtk)
+in
+  [ //MSG71($SN, $HN, msg_in)
+    In(msg_in) //In(senc(msg_in,cLtk))
+  , State_HN_2($HN, hn_id, ue_supi, hn_ltk, cLtk, hn_sqn, hn_sk, sn_id, xRES, K_SEAF)
+  ]
+  --[ Receive($HN, msg_in)
+    , Station('HN')
+    , IN_HN_71($HN, <'msg71', <RES, AT_MAC2>>)
+    //, Eq(msg_type, 'msg71') 
+    ]->
+  [ State_HN_3_1($HN, hn_id, ue_supi, hn_ltk, cLtk, hn_sqn, hn_sk, sn_id, xRES, K_SEAF, AT_MAC2) ]
+
+
+//--------------------------------------------------------------------------------//
+//                                   MESSAGE 7.2                                  //
+//                             SYNCHRONIZATION FAILURE                            //
+//                   <'SynchronizationFailure', AUTS, R, SUCI>                    //
+//                                UE     SN --> HN                                //
+//--------------------------------------------------------------------------------//
+
+
+rule 7_2_SN_send_to_HN:
+let
+  msg_out = senc(<'msg72', <AUTS, R, suci>>, cLtk)
+in
+  [ State_SN_6_2($SN, sn_id, cLtk, suci, hn_id, R, AUTN, sn_id, AT_MAC1, AUTS) ]
+  --[ Send($SN, msg_out)
+    , Station('SN') 
+    , OUT_SN_72($SN, <'msg71', <AUTS, R, suci>>)
+    ]->
+  [ //MSG72($SN, $HN, msg_out)
+    Out(msg_out) // Out(senc(msg_out, cLtk))
+  , State_SN_7_2($SN, sn_id, cLtk, suci, hn_id, R, AUTN, sn_id, AT_MAC1, AUTS) 
+  ]
+
+rule 7_2_HN_receive_from_SN:
+let
+  msg_in = senc(<'msg72', <AUTS, R, suci>>, cLtk)
+in
+  [ //MSG72($SN, $HN, msg_in)
+    In(msg_in) //In(senc(msg_in,cLtk))
+  , State_HN_2($HN, hn_id, ue_supi, hn_ltk, cLtk, hn_sqn, hn_sk, sn_id, xRES, K_SEAF)
+  ]
+  --[ Receive($HN, msg_in)
+    , Station('HN')
+    , EndSynchronizationFailure(msg_in)
+    , IN_HN_72($HN, <'msg72', <AUTS, R, suci>>)
+    //, Eq(msg_type, 'msg72') 
+    ]->
+  [ State_HN_3_2($HN, hn_id, ue_supi, hn_ltk, cLtk, hn_sqn, hn_sk, sn_id, xRES, K_SEAF) ]
+
+
+//--------------------------------------------------------------------------------//
+//                                   MESSAGE 8.1                                  //
+//                                EXPECTED RESPONSE                               //
+//                                     <SUPI>                                     //
+//                                UE     SN <-- HN                                //
+//--------------------------------------------------------------------------------//
+
+
+rule 8_1_HN_send_to_SN:
+  let
+    msg_out = senc(<'msg81', <ue_supi, K_SEAF>>, cLtk)
+  in
+  [ State_HN_3_1($HN, hn_id, ue_supi, hn_ltk, cLtk, hn_sqn, hn_sk, sn_id, xRES, K_SEAF, AT_MAC2) ]
+  --[ Send($HN, ue_supi)
+    , Station('HN')
+    , OUT_HN_8($HN, <'msg81', <ue_supi, K_SEAF>>)
+   // , Eq(xRES_s, RES_s) 
+    ]->
+  [ //MSG81($HN, $SN, msg_out)
+    Out(msg_out)  //Out(senc(ue_supi,cLtk))
+  , State_HN_4_1($HN, hn_id, ue_supi, hn_ltk, cLtk, hn_sqn, hn_sk, sn_id, xRES, K_SEAF, AT_MAC2)
+  ]
+
+rule 8_1_SN_receive_from_HN:
+  let
+    msg_in = senc(<'msg81', ue_supi, K_SEAF>, cLtk)
+  in
+  [ //MSG81($HN, $SN, msg_in)
+    In(msg_in) // In(senc(ue_supi,cLtk))
+  , State_SN_7_1($SN, sn_id, cLtk, suci, hn_id, R, AUTN, sn_id, AT_MAC1, RES, AT_MAC2) ]
+  --[ Receive($SN, ue_supi)
+    , Station('SN')
+    , IN_SN_8($SN, <'msg81', ue_supi>)
+    , EndExpectedResponse(ue_supi) 
+    ]->
+  [ State_SN_8_1($SN, sn_id, cLtk, suci, hn_id, R, AUTN, sn_id, AT_MAC1, RES, AT_MAC2, ue_supi, K_SEAF)  ]
+
+
+//--------------------------------------------------------------------------------//
+//                                  Restrictions                                  //
+//--------------------------------------------------------------------------------//
+
+
+restriction Equality:
+"All x y #i. 
+    Eq(x,y) @i 
+      ==> x = y"
+
+restriction Inequality:
+"All x y #i. 
+    Neq(x,y) @i  
+      ==> not (x = y)"
+
+restriction SmallerThan:
+" All x y #i. 
+    SmallerThan(x,y)@i 
+      ==> Ex z. y = x + z  "
+
+
+//--------------------------------------------------------------------------------//
+//                              Executability lemmas                              //
+//--------------------------------------------------------------------------------//
+
+
+// this is necessary to remove the partial deconstructions
+lemma types [sources]:
+" (All HN suci_and_SN_id #i. 
+    In_HN_3(HN, suci_and_SN_id)@i 
+    ==>
+    ( (Ex #j. KU(suci_and_SN_id)@j & #j<#i)
+    | (Ex #j SN. OUT_SN_3(SN, suci_and_SN_id)@j & #j<#i)
+    ) 
+  )
+& (All SN AV #i. 
+    IN_SN_4(SN, AV) @i 
+    ==>
+    ( (Ex #j. KU(AV)@j & #j<#i)
+    | (Ex #j HN. OUT_HN_4(HN, AV)@j & #j<#i)
+    )
+  )
+& (All HN SUCI_and_res #i. 
+    IN_HN_71(HN, SUCI_and_res) @i 
+    ==>
+    ( (Ex #j. KU(SUCI_and_res)@j & #j<#i)
+    | (Ex #j SN. OUT_SN_71(SN, SUCI_and_res)@j & #j<#i)
+    )
+  )
+& (All HN AUTS_R_suci #i. 
+    IN_HN_72(HN, AUTS_R_suci) @i 
+    ==>
+    ( (Ex #j. KU(AUTS_R_suci)@j & #j<#i)
+    | (Ex #j SN. OUT_SN_72(SN, AUTS_R_suci)@j & #j<#i)
+    )
+  )
+& (All SN SUPI #i. 
+    IN_SN_8(SN, SUPI) @i 
+    ==>
+    ( (Ex #j. KU(SUPI)@j & #j<#i)
+    | (Ex #j HN. OUT_HN_8(HN, SUPI)@j & #j<#i)
+    )
+  )
+"
+
+lemma executable_initialization: 
+  exists-trace
+    "Ex M1 M2  #i #j.
+       StartExchange(M1) @i & EndInitialization(M2) @j"
+
+lemma executable_expected_response:
+  exists-trace
+    "Ex M1 M2 #i #j.
+       StartExchange(M1) @i & EndExpectedResponse(M2) @j"
+
+lemma executable_synchronization_failure:
+  exists-trace
+    "Ex M1 M2 #i #j.
+       StartExchange(M1) @i & EndSynchronizationFailure(M2) @j"
+
+lemma executable_mac_failure:
+  exists-trace
+    "Ex M1 M2 #i #j.
+       StartExchange(M1) @i & EndMacFailure(M2) @j"
+
+
+//--------------------------------------------------------------------------------//
+//                                Secrecity lemmas                                //
+//--------------------------------------------------------------------------------//
+
+
+// lemma secrecy_HN:
+//   "All secr #i . 
+//     Secret(secr) @i& Station('HN') @i ==> 
+//       not (Ex #j. K(secr)@j)
+//           | (Ex stat #r. Reveal(stat)@r & Honest(stat) @i)"
+
+// lemma secrecy_UE:
+//   "All secr #i. 
+//     Secret(secr) @i& Station('UE') @i ==> 
+//       not (Ex #j. K(secr)@j)
+//           | (Ex stat #r. Reveal(stat)@r & Honest(stat) @i)"
+
+// lemma secrecy_SN:
+//   "All secr #i. 
+//     Secret(secr) @i& Station('SN') @i ==> 
+//       not (Ex #j. K(secr)@j)
+//           | (Ex stat #r. Reveal(stat)@r & Honest(stat) @i)"
+
+
+
+lemma KSEAF_secrecy:
+" /* It cannot be that */
+  not(
+      Ex secr #i.
+        Secret_KSEAF(secr) @i
+      & (Ex #j. K(secr) @ j)
+      & not (Ex rev #r. RevealLtk(rev) @ r)
+      & not (Ex rev #r. RevealCLtk(rev) @ r)
+      & not (Ex rev #r. RevealPrivK(rev) @ r)
+      & not (Ex rev #r. RevealSQN(rev) @ r)
+     )"
+
+lemma SUPI_secrecy:
+" /* It cannot be that */
+  not(
+      Ex secr #i.
+        /* somebody claims to have setup a shared secret, */
+        Secret_SUPI(secr) @i
+         /* but the adversary knows it */
+      & (Ex #j. K(secr) @ j)
+        /* without having performed a long-term key reveal. */
+      & not (Ex rev #r. RevealLtk(rev) @ r)
+      & not (Ex rev #r. RevealCLtk(rev) @ r)
+      & not (Ex rev #r. RevealPrivK(rev) @ r)
+      & not (Ex rev #r. RevealSQN(rev) @ r)
+     )"
+
+
+lemma SQN_secrecy:
+" /* It cannot be that */
+  not(
+      Ex secr #i.
+        /* somebody claims to have setup a shared secret, */
+        Secret_SQN(secr) @i
+         /* but the adversary knows it */
+      & (Ex #j. K(secr) @ j)
+        /* without having performed a long-term key reveal. */
+      & not (Ex rev #r. RevealLtk(rev) @ r)
+      & not (Ex rev #r. RevealCLtk(rev) @ r)
+      & not (Ex rev #r. RevealPrivK(rev) @ r)
+      & not (Ex rev #r. RevealSQN(rev) @ r)
+     )"
+
+
+lemma Ltk_secrecy:
+" /* It cannot be that */
+  not(
+      Ex secr #i.
+        /* somebody claims to have setup a shared secret, */
+        Secret_LTK(secr) @i
+         /* but the adversary knows it */
+      & (Ex #j. K(secr) @ j)
+        /* without having performed a long-term key reveal. */
+      & not (Ex rev #r. RevealLtk(rev) @ r)
+      & not (Ex rev #r. RevealCLtk(rev) @ r)
+      & not (Ex rev #r. RevealPrivK(rev) @ r)
+      & not (Ex rev #r. RevealSQN(rev) @ r)
+     )"
+
+
+lemma HNprivatek_secrecy:
+" /* It cannot be that */
+  not(
+      Ex secr #i.
+        /* somebody claims to have setup a shared secret, */
+        Secret_PRIVK(secr) @i
+         /* but the adversary knows it */
+      & (Ex #j. K(secr) @ j)
+        /* without having performed a long-term key reveal. */
+      & not (Ex rev #r. RevealLtk(rev) @ r)
+      & not (Ex rev #r. RevealCLtk(rev) @ r)
+      & not (Ex rev #r. RevealPrivK(rev) @ r)
+      & not (Ex rev #r. RevealSQN(rev) @ r)
+     )"
+
+
+//--------------------------------------------------------------------------------//
+//                             Authentication lemmas                              //
+//--------------------------------------------------------------------------------//
+
+
+// lemma SUPI_authentcation:
+//   "All UE SUPI #i. 
+//     Authentic(UE,SUPI) @i & Station('HN') @i
+//       ==> (Ex #j. Send(UE, SUPI) @j & Station('UE') @j & j<i)"
+
+// lemma K_SEAF_authentication:
+//   "All HN K_SEAF #i. 
+//     Authentic(HN,K_SEAF) @i & Station('SN') @i 
+//       ==> (Ex #j. Send(HN, K_SEAF) @j & Station('HN') @j & j<i)"
+
+end
